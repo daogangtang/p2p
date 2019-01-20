@@ -96,5 +96,28 @@ impl PingStream {
             data_buf: BytesMut::default(),
         }
     }
+
+    pub fn key(&self) -> PingStreamKey {
+        PingStreamKey {
+            direction: self.direction,
+            session_id: self.session_id,
+            proto_id: self.proto_id,
+        }
+    }
 }
+
+
+#[derive(Eq, PartialEq, Hash, Debug, Clone, Copy)]
+pub enum Direction {
+    Inbound,
+    Outbound,
+}
+
+#[derive(Eq, PartialEq, Hash, Debug, Clone)]
+pub struct PingStreamKey {
+    pub(crate) direction: Direction,
+    pub(crate) session_id: SessionId,
+    pub(crate) proto_id: ProtocolId,
+}
+
 

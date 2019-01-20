@@ -15,8 +15,20 @@ pub struct PingDialer {
 
 }
 
+enum PingDialerState {
+    WaitingForPong,
+    Idle,
+    Poisoned,
+}
+
+
 impl PingDialer {
-    pub fn ping() {
+    pub fn new() -> PingDialer {
+
+
+    }
+
+    pub fn ping(&self) {
         let payload: [u8; 32] = self.rng.sample(Standard);
         debug!("Preparing for ping with payload {:?}", payload);
         self.pings_to_send.push_back((Bytes::from(payload.to_vec()), user_data));
@@ -35,11 +47,18 @@ impl Stream for PingDialer {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
 
+        // here, add state checking logic, and calling sending part and recieving part
+        match mem::replace(&mut self.out_state, PingDialerState::Poisoned) {
+
+
+        }
+
         if self.needs_close {
             try_ready!(self.inner.close());
             return Ok(Async::Ready(None));
         }
 
+        //TODO: divide this part as sending pings part
         while let Some((ping, user_data)) = self.pings_to_send.pop_front() {
             match self.inner.start_send(ping.clone()) {
                 Ok(AsyncSink::Ready) => self.need_writer_flush = true,
@@ -61,6 +80,7 @@ impl Stream for PingDialer {
             }
         }
 
+        //TODO: divide this part as recieving pings part
         loop {
             match self.inner.poll() {
                 Ok(Async::Ready(Some(pong))) => {
@@ -104,6 +124,10 @@ enum PingListenerState {
 }
 
 impl PingListener {
+    pub fn new() -> PingListener {
+
+    }
+
     pub fn shutdown(&mut self) {
         self.state = PingListenerState::Closing;
     }
