@@ -6,7 +6,7 @@ struct PingProtocol {
     notify_counter: u32,
     sessions: HashMap<SessionId, SessionData>,
     inner_task_senders: FnvHashMap<SessionId, Sender<Vec<u8>>>,
-    ping_node: Option<PingNode>,
+    ping_node: PingNode,
 
 }
 
@@ -14,15 +14,15 @@ impl PingProtocol {
     fn new(
         id: usize,
         ty: &'static str,
-        ping_node: PingNode,
     ) -> PingProtocol {
+        let ping_node = PingNode::new();
         PingProtocol {
             id,
             ty,
             notify_counter: 0,
             sessions: HashMap::default(),
             inner_task_senders: FnvHashMap::default(),
-            ping_node: Some(ping_node),
+            ping_node: ping_node,
         }
 
     }
@@ -72,25 +72,20 @@ impl ProtocolHandle for PingProtocol {
             })
             .map_err(|err| warn!("{}", err));
 
+        debug!("Start ping future_task");
         let ping_task = self.ping_node
-            .take()
-            .map(|ping_node| {
-                debug!("Start ping future_task");
-                ping_node 
-                .for_each(|()| {
-                    debug!("ping_node.for_each()");
-                    Ok(())
-                })
-                .map_err(|err| {
-                    warn!("ping stream error: {:?}", err);
-                    ()
-                })
-                .then(|_| {
-                    warn!("End of ping_task");
-                    Ok(())
-                })
+            .for_each(|()| {
+                debug!("ping_node.for_each()");
+                Ok(())
             })
-            .unwrap();
+            .map_err(|err| {
+                warn!("ping stream error: {:?}", err);
+                ()
+            })
+            .then(|_| {
+                warn!("End of ping_task");
+                Ok(())
+            });
 
         control.future_task(interval_task);
         control.future_task(ping_task);
@@ -209,10 +204,6 @@ impl SessionData {
     }
 }
 
-fn create_ping_node() -> PingNode {
-
-
-}
 
 fn main() {
 

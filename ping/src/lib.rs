@@ -5,11 +5,7 @@
 
 pub struct PingNode {
     
-    dialer: PingDialer,
-
-    listener: PingListener,
-
-    substreams: FnvHashMap<PingStreamKey, PingStream>,
+    substreams: FnvHashMap<PingStreamKey, PingEndpoint>,
 
     substream_sender: Sender<Pingstream>,
 
@@ -22,8 +18,6 @@ impl PingNode {
     pub fn new() -> PingNode {
          let (substream_sender, substream_receiver) = channel(8);
          PingNode {
-             dialer: PingDialer::new(),
-             listener: PingListener::new(),
              substreams: FnvHashMap::default(),
              substream_sender,
              substream_receiver,
@@ -33,12 +27,21 @@ impl PingNode {
     pub fn recv_substreams(&mut self) -> {
         loop {
             match self.substream_receiver.poll() {
-                Ok(Async::Ready(Some(substream))) => {
-                    let key = substream.key();
+                Ok(Async::Ready(Some(pingstream))) => {
+                    let key = pingstream.key();
                     debug!("Received a substream: key={:?}", key);
-                    // TODO: here, do a init ping to start the process
-                    // substream.ping();
-                    self.substreams.insert(key, substream);
+                    // create PingEndpoint here
+                    if key.direction == Direction::InBound {
+                        let listener = PingListener::new(pingstream);
+                        self.substreams.insert(key, PingEndpoint::Listener(listener));
+                    }
+                    else {
+                        let dialer = PingDialer::new(pingstream);
+                        // do a ping action once PingDialer created
+                        dialer.ping();
+                        self.substreams.insert(key, PingEndpoint::Dialer(dialer));
+                    }
+
                 },
                 Ok(Async::Ready(None)) => unreachable!(),
                 Ok(Async::NotReady) => {
@@ -71,8 +74,9 @@ impl Stream for PingNode {
         for (key, substream) in self.substreams.iter_mut() {
             // PingListener
             if key.direction == Direction::InBound {
-                // poll self.listener
-                match self.listener.poll() {
+                // poll listener
+                let PingEndpoint(listener) = substream;
+                match listener.poll() {
                     Ok(Async::Ready(())) => {},
                     Ok(Async::NotReady) => {},
                     Err(err) => warn!(target: "p2p", "Remote ping substream errored: {:?}", err),
@@ -80,8 +84,9 @@ impl Stream for PingNode {
             }
             // PingDialer
             else {
-                // poll self.dialer
-                match self.dialer.poll() {
+                // poll dialer
+                let PingEndpoint(dialer) = substream;
+                match dialer.poll() {
 
 
                 }
