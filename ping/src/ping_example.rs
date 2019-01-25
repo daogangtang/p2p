@@ -1,3 +1,33 @@
+use env_logger;
+use log::{debug, warn, info};
+
+use fnv::FnvHashMap;
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    str,
+    time::{Duration, Instant},
+};
+
+use futures::{
+    prelude::*,
+    sync::mpsc::{channel, Sender},
+};
+
+use tokio::codec::length_delimited::LengthDelimitedCodec;
+use tokio::timer::{Error, Interval};
+
+use p2p::{
+    builder::ServiceBuilder,
+    service::{Message, ProtocolHandle, ServiceContext, ServiceEvent, ServiceHandle, ServiceTask},
+    session::{ProtocolId, ProtocolMeta, SessionId},
+    SessionType,
+};
+use secio::PublicKey;
+
+use ping::{PingNode, Direction, PingStream};
+
+
 
 
 struct PingProtocol {
@@ -24,9 +54,7 @@ impl PingProtocol {
             inner_task_senders: FnvHashMap::default(),
             ping_node: ping_node,
         }
-
     }
-
 }
 
 impl ProtocolMeta<LengthDelimitedCodec> for PingProtocol {
@@ -141,7 +169,6 @@ impl ProtocolHandle for PingProtocol {
         self.sessions.remove(&session_id);
         self.inner_task_senders.remove(&session_id);
         debug!("protocol [ping] close on session [{}]", session_id);
-
     }
 
     fn received(&mut self, _env: &mut ServiceContext, data: Message) {
@@ -206,6 +233,25 @@ impl SessionData {
 
 
 fn main() {
-
-
+    env_logger::init();
+    if std::env::args().nth(1) == Some("server".to_string()) {
+        debug!("Starting server ......");
+        let protocol = PingProtocol::new(0, "PingServer");
+        let mut service = ServiceBuilder::default()
+            .insert_protocol(protocol)
+            .forever(true)
+            .build(SHandle {});
+        let _ = service.listen("127.0.0.1:1337".parse().unwrap());
+        tokio::run(service.for_each(|_| Ok(())))
+    } else {
+        debug!("Starting client ......");
+        let protocol = PingProtocol::new(0, "PingClient");
+        let mut service = ServiceBuilder::default()
+            .insert_protocol(protocol)
+            .forever(true)
+            .build(SHandle {})
+            .dial("127.0.0.1:1337".parse().unwrap());
+        let _ = service.listen("127.0.0.1:1338".parse().unwrap());
+        tokio::run(service.for_each(|_| Ok(())))
+    }
 }
