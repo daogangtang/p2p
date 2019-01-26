@@ -25,7 +25,7 @@ use p2p::{
 };
 use secio::PublicKey;
 
-use ping::{PingNode, Direction, PingStream};
+use ping::{PingNode, Direction, PingStream, PingNodeSubstreamSender};
 
 
 
@@ -36,7 +36,8 @@ struct PingProtocol {
     notify_counter: u32,
     sessions: HashMap<SessionId, SessionData>,
     inner_task_senders: FnvHashMap<SessionId, Sender<Vec<u8>>>,
-    ping_node: PingNode,
+    ping_node: Option<PingNode>,
+    ping_node_stream_sender: PingNodeSubstreamSender,
 
 }
 
@@ -46,13 +47,15 @@ impl PingProtocol {
         ty: &'static str,
     ) -> PingProtocol {
         let ping_node = PingNode::new();
+        let ping_node_stream_sender = ping_node.get_substream_sender();
         PingProtocol {
             id,
             ty,
             notify_counter: 0,
             sessions: HashMap::default(),
             inner_task_senders: FnvHashMap::default(),
-            ping_node: ping_node,
+            ping_node: Some(ping_node),
+            ping_node_stream_sender,
         }
     }
 }
@@ -68,13 +71,16 @@ impl ProtocolMeta<LengthDelimitedCodec> for PingProtocol {
     }
 
     fn handle(&self) -> Option<Box<dyn ProtocolHandle + Send + 'static>> {
+        let ping_node = PingNode::new();
+        let ping_node_stream_sender = ping_node.get_substream_sender();
         Some(Box::new(PingProtocol {
             id: self.id,
             ty: self.ty,
             notify_counter: 0,
             sessions: HashMap::default(),
             inner_task_senders: FnvHashMap::default(),
-            ping_node: self.ping_node,
+            ping_node: Some(ping_node),
+            ping_node_stream_sender,
         }))
     }
 
@@ -102,18 +108,23 @@ impl ProtocolHandle for PingProtocol {
 
         debug!("Start ping future_task");
         let ping_task = self.ping_node
-            .for_each(|()| {
-                debug!("ping_node.for_each()");
-                Ok(())
-            })
-            .map_err(|err| {
-                warn!("ping stream error: {:?}", err);
-                ()
-            })
-            .then(|_| {
-                warn!("End of ping_task");
-                Ok(())
-            });
+            .take()
+            .map(|pingnode| {
+                debug!("Start ping future_task");
+                pingnode
+                .for_each(|()| {
+                    debug!("ping_node.for_each()");
+                    Ok(())
+                })
+                .map_err(|err| {
+                    warn!("ping stream error: {:?}", err);
+                    ()
+                })
+                .then(|_| {
+                    warn!("End of ping_task");
+                    Ok(())
+                })
+            }).unwrap();
 
         control.future_task(interval_task);
         control.future_task(ping_task);
@@ -154,8 +165,7 @@ impl ProtocolHandle for PingProtocol {
             control.sender().clone(),
         );
 
-        let substream_sender = self.ping_node.get_substream_sender();
-        match substream_sender.try_send(substream) {
+        match self.ping_node_stream_sender.substream_sender.try_send(substream) {
             Ok(_) => {
                 debug!("Send substream success");
             }

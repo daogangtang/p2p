@@ -75,7 +75,7 @@ impl PingDialer {
 
     }
 
-    pub fn ping(&self) {
+    pub fn ping(&mut self) {
         let payload: [u8; 32] = self.rng.sample(Standard);
         debug!("Preparing for ping with payload {:?}", payload);
         self.pings_to_send.push_back((Bytes::from(payload.to_vec()), Instant::now()));
@@ -166,7 +166,9 @@ impl Stream for PingDialer {
 
         // here, add state checking logic, and calling sending part and recieving part
         match mem::replace(&mut self.state, PingDialerState::Poisoned) {
-
+            PingDialerState::Shutdown | PingDialerState::Poisoned => {
+                Ok(Async::Ready(None))
+            },
             PingDialerState::WaitingForPong {mut expires} => {
 
                 match self.send_pings() {
@@ -346,7 +348,6 @@ impl Encoder for Codec {
     }
 }
 
-#[derive(Clone)]
 pub enum PingEndpoint {
     Dialer(PingDialer),
     Listener(PingListener)
