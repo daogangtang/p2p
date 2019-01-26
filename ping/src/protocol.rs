@@ -4,25 +4,26 @@ use futures::{prelude::*, future::{self, FutureResult}, try_ready};
 use log::{debug, trace, warn};
 use rand::{distributions::Standard, prelude::*, rngs::EntropyRng};
 use std::collections::VecDeque;
+use std::io;
 use std::io::Error as IoError;
 use std::{iter, marker::PhantomData, mem};
 use tokio::codec::{Decoder, Encoder, Framed};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::timer::{self, Delay};
 
-
-
+use crate::substream::PingStream;
 
 pub struct PingDialer {
 
     inner: Framed<PingStream, Codec>,
 
-    sent_pings: VecDeque<(Bytes, TUserData)>,
+    sent_pings: VecDeque<(Bytes, Instant)>,
 
     rng: EntropyRng,
 
-    pings_to_send: VecDeque<(Bytes, TUserData)>,
+    pings_to_send: VecDeque<(Bytes, Instant)>,
 
     state: PingDialerState,
 
@@ -32,7 +33,6 @@ pub struct PingDialer {
     ping_timeout: Duration,
 
     delay_to_next_ping: Duration,
-
 
 }
 
@@ -78,7 +78,7 @@ impl PingDialer {
     pub fn ping(&self) {
         let payload: [u8; 32] = self.rng.sample(Standard);
         debug!("Preparing for ping with payload {:?}", payload);
-        self.pings_to_send.push_back((Bytes::from(payload.to_vec()), user_data));
+        self.pings_to_send.push_back((Bytes::from(payload.to_vec()), Instant::now()));
     }
 
     #[inline]
@@ -86,7 +86,7 @@ impl PingDialer {
         self.needs_close = true;
     }
 
-    pub fn send_pings() -> Result<(), io::Error> {
+    pub fn send_pings(&mut self) -> Result<(), io::Error> {
         //TODO: divide this part as sending pings part
         while let Some((ping, user_data)) = self.pings_to_send.pop_front() {
             match self.inner.start_send(ping.clone()) {
@@ -113,7 +113,7 @@ impl PingDialer {
 
     }
 
-    fn receive_pings(&mut self) -> Poll<Option<()>, io::Error> {
+    fn receive_pings(&mut self) -> Poll<Option<Instant>, io::Error> {
         //TODO: divide this part as recieving pings part
         loop {
             match self.inner.poll() {
@@ -144,17 +144,17 @@ impl Stream for PingDialer {
     type Item = OutState;
     type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
 
         macro_rules! poll_delay {
             ($delay:expr => { NotReady => $notready:expr, Ready => $ready:expr, }) => (
                 match $delay.poll() {
                     Ok(Async::NotReady) => $notready,
-                Ok(Async::Ready(())) => $ready,
-                Err(err) => {
-                    warn!(target: "p2p", "Ping timer errored: {:?}", err);
-                    return Err(io::Error::new(io::ErrorKind::Other, err));
-                }
+                    Ok(Async::Ready(())) => $ready,
+                    Err(err) => {
+                        warn!(target: "p2p", "Ping timer errored: {:?}", err);
+                        return Err(io::Error::new(io::ErrorKind::Other, err));
+                    }
                 }
             )
         }
@@ -165,31 +165,33 @@ impl Stream for PingDialer {
         }
 
         // here, add state checking logic, and calling sending part and recieving part
-        match mem::replace(&mut self.out_state, PingDialerState::Poisoned) {
+        match mem::replace(&mut self.state, PingDialerState::Poisoned) {
 
             PingDialerState::WaitingForPong {mut expires} => {
 
                 match self.send_pings() {
                     Ok(_) => {
-
                     },
-                    Err(_) => {
-
+                    Err(err) => {
+                        debug!("receive_pings err {:?}", err);
                     }
                 }
 
-                match self.receive_pings()? {
-                     Async::Ready(Some(started)) => {
+                match self.receive_pings() {
+                     Ok(Async::Ready(Some(started))) => {
                          self.state = PingDialerState::Idle {
                             next_ping:  Delay::new(Instant::now() + self.delay_to_next_ping)
                          };
 
-                         return Ok(Async::Ready(OutState::PingSuccess(started.elapsed())));
+                         return Ok(Async::Ready(Some(OutState::PingSuccess(started.elapsed()))));
                      },
-                     Async::NotReady => {},
-                     Async::Ready(None) => {
+                     Ok(Async::NotReady) => {},
+                     Ok(Async::Ready(None)) => {
                          self.state = PingDialerState::Shutdown;
-                         return Ok(Async::Ready(OutState::Shutdown));
+                         return Ok(Async::Ready(Some(OutState::Shutdown)));
+                     },
+                     Err(err) => {
+                        debug!("receive_pings err {:?}", err);
                      }
                 }
 
@@ -215,19 +217,14 @@ impl Stream for PingDialer {
                     },
                     Ready => {
                         let expires = Delay::new(Instant::now() + self.ping_timeout);
-                        self.ping(Instant::now());
+                        self.ping();
                         self.state = PingDialerState::WaitingForPong { expires };
-                        Ok(Async::Ready(OutState::PingStart)))
+                        Ok(Async::Ready(Some(OutState::PingStart)))
                     },
                 })
-
             }
-
         }
-
-        Ok(Async::NotReady)
     }
-
 }
 
 
@@ -242,7 +239,7 @@ enum PingListenerState {
     Listening,
     Sending(Bytes),
     Flushing,
-    CLosing,
+    Closing,
     Poisoned,
 }
 
@@ -349,6 +346,7 @@ impl Encoder for Codec {
     }
 }
 
+#[derive(Clone)]
 pub enum PingEndpoint {
     Dialer(PingDialer),
     Listener(PingListener)

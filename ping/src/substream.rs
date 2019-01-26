@@ -10,6 +10,8 @@ use futures::{
 };
 use log::{debug, trace, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
+use p2p::service::{Message, ServiceTask};
+use p2p::session::{ProtocolId, SessionId};
 
 
 

@@ -3,10 +3,11 @@ use std::io;
 
 use fnv::{FnvHashMap, FnvHashSet};
 use futures::{
+    Future,
     sync::mpsc::{channel, Receiver, Sender},
     Async, Poll, Stream,
 };
-use log::debug;
+use log::{debug, warn};
 
 mod substream;
 mod protocol;
@@ -18,6 +19,7 @@ pub use crate::{
 
 
 
+#[derive(Clone)]
 pub struct PingNode {
     
     substreams: FnvHashMap<PingStreamKey, PingEndpoint>,
@@ -39,14 +41,14 @@ impl PingNode {
          }
     }
 
-    pub fn recv_substreams(&mut self) -> {
+    pub fn recv_substreams(&mut self) -> Result<(), io::Error> {
         loop {
             match self.substream_receiver.poll() {
                 Ok(Async::Ready(Some(pingstream))) => {
                     let key = pingstream.key();
                     debug!("Received a substream: key={:?}", key);
                     // create PingEndpoint here
-                    if key.direction == Direction::InBound {
+                    if key.direction == Direction::Inbound {
                         let listener = PingListener::new(pingstream);
                         self.substreams.insert(key, PingEndpoint::Listener(listener));
                     }
@@ -69,6 +71,7 @@ impl PingNode {
                 }
             }
         }
+
         Ok(())
     }
 
@@ -88,11 +91,11 @@ impl Stream for PingNode {
 
         for (key, substream) in self.substreams.iter_mut() {
             // PingListener
-            if key.direction == Direction::InBound {
+            if key.direction == Direction::Inbound {
                 // poll listener
-                let PingEndpoint(listener) = substream;
+                let PingEndpoint::Listener(listener) = substream;
                 match listener.poll() {
-                    Ok(Async::Ready(())) => {},
+                    Ok(Async::Ready(_)) => {},
                     Ok(Async::NotReady) => {},
                     Err(err) => warn!(target: "p2p", "Remote ping substream errored: {:?}", err),
                 }
@@ -100,13 +103,17 @@ impl Stream for PingNode {
             // PingDialer
             else {
                 // poll dialer
-                let PingEndpoint(dialer) = substream;
+                let PingEndpoint::Dialer(dialer) = substream;
                 match dialer.poll() {
-
-
+                    Ok(Async::Ready(Some(_))) => {},
+                    Ok(Async::Ready(None)) => {},
+                    Ok(Async::NotReady) => {},
+                    Err(err) => warn!(target: "p2p", "ping substream errored: {:?}", err),
                 }
             }
         }
+
+        Ok(Async::NotReady)
     }
 
 }
